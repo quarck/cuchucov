@@ -4,15 +4,19 @@ import cgi
 import cgitb
 import os
 import datetime 
+import csv 
+import fcntl 
 
 cgitb.enable()
 
 storage="/home/www-data/cov_log"
 
+own_path = os.environ['REQUEST_URI'] if 'REQUEST_URI' in os.environ else ''
+method = os.environ['REQUEST_METHOD'].upper() if 'REQUEST_METHOD' in os.environ else ''
+
 print("Content-Type: text/html\r\n")
 print("\r\n")
 
-own_path = os.environ['REQUEST_URI']
 
 template="""
 <!doctype html>
@@ -22,6 +26,29 @@ template="""
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,user-scalable=0,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0">
 <style>
+html {{
+   font-family: 'Lato', sans-serif;
+}}
+
+h1 {{
+    margin: 0px;
+    padding: 0px;
+    margin-bottom: 10px;
+    padding-top: 10px;
+    color: #000;
+    font-size: 25px;
+    font-weight: bold;
+ }}
+h2 {{
+    margin: 0px;
+    padding: 0px;
+    margin-bottom: 10px;
+    padding-top: 0px;
+    color: #000;
+    font-size: 18px;
+    font-weight: bold;
+ }}
+
 .GDPRPanel {{
     position: fixed;
     bottom: -1px;
@@ -36,11 +63,28 @@ template="""
     padding: 0 9px 0 12px;
     color: #fff;
     background: #000;
+	font-size: 15px;
+}}
+
+body {{
+	background: #feeb00; 
 }}
 
 #allow_cookies_div {{
 	display: none;
 }}
+
+.dirbutton {{
+    font-size: 18px;
+    height:70px; 
+    width:80%
+}}
+
+input {{
+    font-size: 16px;
+	width: 100%;
+}}
+
 </style>
 </head>
 <body onload="onload()">
@@ -103,6 +147,12 @@ template="""
 
 	function onload()
 	{{
+
+		if ( window.history.replaceState ) 
+		{{
+			window.history.replaceState( null, null, window.location.href );
+		}}
+
 		if (get_cookie('allow_cookies') != "1")
 		{{
 			document.getElementById('allow_cookies_div').style.display = 'flex'
@@ -140,33 +190,28 @@ template="""
 <button onclick="on_allow_cookies()">&nbsp;&nbsp;OK&nbsp;&nbsp;</button></p>
 </div>
 
-<h2 id="header">
-CuChulainn Archers <br/>Attendance Record Keeping System
-</h2>
+<h1 id="header">CuChulainn Archers </h1>
+<h2 id="header2">Attendance Record Keeping System</h2>
 
 {status}
-<p id="last_update_text" style="display: none">djdjdjdj</p>
+<p id="last_update_text" style="display: none"></p>
 
 <form action="{own_path}" method="post" id="form">
 <input type="hidden" name="dir" id="direction" value="U"/> <!-- U - unknown, A - arrived, D - departing -->
 <input type="hidden" name="dt" id="datetime" value=""/> <!-- client date time -->
 <table width="100%" border="0px" cellspacing="10px">
 
-<tr><td><label for="archer_name">Name:</label></td> <td><input type="text" id="name" name="name" placeholder="Your Real Name" value="{name}" style="width:100%"></td></tr>
+<tr><td><label for="archer_name">Name:</label></td> <td><input type="text" id="name" name="name" placeholder="Your Real Name" value="{name}"/></td></tr>
 
-<tr><td><label for="phone">Mobile:</label></td> <td><input type="tel" id="phone" name="phone" placeholder="Your Mobile Phone" value="{phone}" style="width:100%"></td></tr>
+<tr><td><label for="phone">Mobile:</label></td> <td><input type="tel" id="phone" name="phone" placeholder="Your Mobile Phone" value="{phone}"/></td></tr>
 </table>
 <p>By clicking either button below you are agreeing for your input being recorded for contract tracing purposes</p>
 </form>
 <p align="center">
-<button id="btn_arrived" style="height:70px; width:80%"
-	onclick="submit('Arrival')"
->Arrived</button>
+<button id="btn_arrived" class="dirbutton" onclick="submit('Arrival')">Arrived</button>
 </p>
 <p align="center">
-<button id="btn_departing" style="height:70px; width:80%"
-	onclick="submit('Departure')"
->Departing</button>
+<button id="btn_departing" class="dirbutton" onclick="submit('Departure')">Departing</button>
 </p>
 
 <p align="center">
@@ -239,20 +284,46 @@ def print_response(status="", name="", phone=""):
 	print(html)
 
 
-name = form["name"].value if "name" in form else None
-phone = form["phone"].value if "phone" in form else None
-client_time = form["dt"].value if "dt" in form else None
-direction = form["dir"].value if "dir" in form else None
-server_time = str(datetime.datetime.now())
-
-if name is None or phone is None or client_time is None or direction is None: 
+if method == "GET": 
 	print_response(status="")
-else:
-	if name == "" or phone == "":
-		print_response(status="<p id='status' color='red'>Name and Phone are mandatory</p>", name=name, phone=phone)
-		exit(0)
+	exit(0)
 
-	print_response(
-		status="<p id='status'>Recorded successfully: " + direction +  " at " + client_time + "</p>", 
-		)
+if method != "POST":
+	print_response(status="<p id='status' color='red'>Invalid request method</p>")
+	exit(0)
+	
+
+name = form["name"].value if "name" in form else ""
+phone = form["phone"].value if "phone" in form else ""
+client_time = form["dt"].value if "dt" in form else ""
+direction = form["dir"].value if "dir" in form else ""
+
+server_time = datetime.datetime.now()
+
+
+if name == "" or phone == "" or client_time == "" or direction == "": 
+	print_response(status="<p id='status' style=\"color: #ff0000;\">Name and Phone are mandatory</p>", name=name, phone=phone)
+	exit(0)
+
+todays_file = storage + "/log_" + server_time.strftime("%Y%m%d") + ".csv"
+
+new_file = not os.path.exists(todays_file)
+
+def c(s):
+	return s.replace('\r', ' ').replace('\n', ' ')
+
+with open(todays_file, 'a') as f:
+	writer = csv.writer(f)
+
+	fcntl.flock(f, fcntl.LOCK_EX)
+
+	if new_file: 
+		writer.writerow(["name","phone","direction","time","server_time"])
+	writer.writerow([c(name),c(phone),c(direction),c(client_time),str(server_time)])
+
+	fcntl.flock(f, fcntl.LOCK_UN)
+
+print_response(
+	status="<p id='status' style=\"color: #009f00;\">Recorded successfully: " + direction +  " at " + client_time + "</p>", 
+	)
 
